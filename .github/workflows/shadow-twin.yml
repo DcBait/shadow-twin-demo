@@ -66,3 +66,30 @@ jobs:
               repo: context.repo.repo,
               body: `## ${emoji} Shadow Twin Decision: ${decision}\n\n${message}\n\n> *Codex never touches production first — it must survive the shadow world.*`
             });
+
+      - name: Write Shadow Twin audit log
+        if: always()
+        run: |
+          node -e "
+          const fs = require('fs');
+          const log = {
+            repo: process.env.GITHUB_REPOSITORY,
+            run_id: process.env.GITHUB_RUN_ID,
+            run_number: process.env.GITHUB_RUN_NUMBER,
+            workflow: process.env.GITHUB_WORKFLOW,
+            job: process.env.GITHUB_JOB,
+            actor: process.env.GITHUB_ACTOR,
+            event: process.env.GITHUB_EVENT_NAME,
+            ref: process.env.GITHUB_REF,
+            sha: process.env.GITHUB_SHA,
+            pr_number: process.env.GITHUB_EVENT_PATH ? JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH,'utf8')).pull_request?.number : null,
+            timestamp_utc: new Date().toISOString(),
+            // Fill these in from your own outputs later:
+            security_risk_pct: process.env.SECURITY_RISK_PCT || null,
+            defect_risk_pct: process.env.DEFECT_RISK_PCT || null,
+            decision: process.env.SHADOW_DECISION || null,
+            reasons: (process.env.SHADOW_REASONS || '').split('|').filter(Boolean)
+          };
+          fs.writeFileSync('shadowtwin-log.json', JSON.stringify(log, null, 2));
+          console.log('Wrote shadowtwin-log.json');
+          "        
