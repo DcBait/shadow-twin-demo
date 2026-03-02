@@ -91,5 +91,12 @@ jobs:
             reasons: (process.env.SHADOW_REASONS || '').split('|').filter(Boolean)
           };
           fs.writeFileSync('shadowtwin-log.json', JSON.stringify(log, null, 2));
-          console.log('Wrote shadowtwin-log.json');
-          "        
+          
+      - name: Upload Shadow Twin log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowtwin-log-${{ github.run_id }}
+          path: shadowtwin-log.json
+                console.log('Wrote shadowtwin-log.json');
+                "        
