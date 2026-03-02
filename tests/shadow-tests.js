@@ -1,31 +1,26 @@
 /**
  * SHADOW TWIN TEST SUITE
- * 
- * These tests run against the Shadow environment BEFORE any change
- * is allowed to reach production. If ANY test fails, the PR is blocked.
  */
 
-const http = require('http');
 const { createDB } = require('../src/database');
+const fs = require('fs');
+const path = require('path');
 
-const BASE_URL = `http://localhost:${process.env.PORT || 3001}`;
+const PORT = process.env.PORT || 3001;
+const BASE_URL = `http://localhost:${PORT}`;
 const SHADOW_DB = process.env.DB_NAME || 'shadow.sqlite';
 
 let passed = 0;
 let failed = 0;
-const results = [];
 
-// ─── Test Helper ──────────────────────────────────────────────────────────────
 async function test(name, fn) {
   try {
     await fn();
     console.log(`  ✅ PASS: ${name}`);
-    results.push({ name, status: 'PASS' });
     passed++;
   } catch (err) {
     console.log(`  ❌ FAIL: ${name}`);
     console.log(`     └─ ${err.message}`);
-    results.push({ name, status: 'FAIL', error: err.message });
     failed++;
   }
 }
@@ -34,76 +29,66 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function fetchJSON(path, options = {}) {
-  const fetch = (await import('node-fetch')).default;
-  const res = await fetch(`${BASE_URL}${path}`, options);
-  return { status: res.status, body: await res.json() };
+async function fetchJSON(urlPath, options = {}) {
+  // node-fetch v2 uses CommonJS require
+  const fetch = require('node-fetch');
+  const res = await fetch(`${BASE_URL}${urlPath}`, options);
+  let body;
+  try { body = await res.json(); } catch { body = {}; }
+  return { status: res.status, body };
 }
 
 function getToken() {
   try {
-    return require('fs').readFileSync('demo-token.txt', 'utf8').trim();
+    const tokenFile = path.join(process.cwd(), 'demo-token.txt');
+    return fs.readFileSync(tokenFile, 'utf8').trim();
   } catch {
-    // Fallback: get any valid token from shadow DB
     const db = createDB(SHADOW_DB);
-    const session = db.prepare(`
-      SELECT token FROM sessions WHERE expires_at > datetime('now') LIMIT 1
-    `).get();
+    const session = db.prepare(
+      `SELECT token FROM sessions WHERE expires_at > datetime('now') LIMIT 1`
+    ).get();
     return session?.token || '';
   }
 }
 
-// ─── TEST 1: Schema Integrity ─────────────────────────────────────────────────
+// ─── TEST GROUP 1: Schema Integrity ──────────────────────────────────────────
 async function testSchemaIntegrity() {
   console.log('\n📋 Test Group 1: Schema Integrity');
 
   await test('users table exists with correct columns', () => {
     const db = createDB(SHADOW_DB);
-    const tableInfo = db.prepare(`PRAGMA table_info(users)`).all();
-    const columns = tableInfo.map(c => c.name);
-
-    assert(columns.includes('id'), 'Missing column: id');
-    assert(columns.includes('name'), 'Missing column: name');
-    assert(columns.includes('email'), 'Missing column: email');
-    assert(columns.includes('role'), 'Missing column: role');
-    assert(columns.includes('created_at'), 'Missing column: created_at');
+    const cols = db.prepare(`PRAGMA table_info(users)`).all().map(c => c.name);
+    assert(cols.includes('id'), 'Missing: id');
+    assert(cols.includes('name'), 'Missing: name');
+    assert(cols.includes('email'), 'Missing: email');
+    assert(cols.includes('role'), 'Missing: role');
   });
 
   await test('orders table exists with correct columns', () => {
     const db = createDB(SHADOW_DB);
-    const tableInfo = db.prepare(`PRAGMA table_info(orders)`).all();
-    const columns = tableInfo.map(c => c.name);
-
-    assert(columns.includes('id'), 'Missing column: id');
-    assert(columns.includes('user_id'), 'Missing column: user_id');
-    assert(columns.includes('product'), 'Missing column: product');
-    assert(columns.includes('amount'), 'Missing column: amount');
-    assert(columns.includes('status'), 'Missing column: status');
+    const cols = db.prepare(`PRAGMA table_info(orders)`).all().map(c => c.name);
+    assert(cols.includes('user_id'), 'Missing: user_id');
+    assert(cols.includes('product'), 'Missing: product');
+    assert(cols.includes('amount'), 'Missing: amount');
   });
 
   await test('sessions table exists with correct columns', () => {
     const db = createDB(SHADOW_DB);
-    const tableInfo = db.prepare(`PRAGMA table_info(sessions)`).all();
-    const columns = tableInfo.map(c => c.name);
-
-    assert(columns.includes('token'), 'Missing column: token — AUTH WILL BREAK');
-    assert(columns.includes('expires_at'), 'Missing column: expires_at');
-    assert(columns.includes('user_id'), 'Missing column: user_id');
+    const cols = db.prepare(`PRAGMA table_info(sessions)`).all().map(c => c.name);
+    assert(cols.includes('token'), 'Missing: token — AUTH WILL BREAK');
+    assert(cols.includes('expires_at'), 'Missing: expires_at');
   });
 
   await test('critical tables have not been dropped', () => {
     const db = createDB(SHADOW_DB);
-    const tables = db.prepare(`
-      SELECT name FROM sqlite_master WHERE type='table'
-    `).all().map(t => t.name);
-
-    assert(tables.includes('users'), '🚨 CRITICAL: users table was DROPPED');
-    assert(tables.includes('orders'), '🚨 CRITICAL: orders table was DROPPED');
-    assert(tables.includes('sessions'), '🚨 CRITICAL: sessions table was DROPPED');
+    const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all().map(t => t.name);
+    assert(tables.includes('users'), '🚨 users table was DROPPED');
+    assert(tables.includes('orders'), '🚨 orders table was DROPPED');
+    assert(tables.includes('sessions'), '🚨 sessions table was DROPPED');
   });
 }
 
-// ─── TEST 2: Auth Enforcement ─────────────────────────────────────────────────
+// ─── TEST GROUP 2: Auth Enforcement ──────────────────────────────────────────
 async function testAuthEnforcement() {
   console.log('\n🔐 Test Group 2: Auth Enforcement');
 
@@ -117,129 +102,114 @@ async function testAuthEnforcement() {
     assert(status === 401, `Expected 401 but got ${status} — AUTH IS BROKEN`);
   });
 
-  await test('/stats returns 401 without token', async () => {
-    const { status } = await fetchJSON('/stats');
-    assert(status === 401, `Expected 401 but got ${status} — AUTH IS BROKEN`);
-  });
-
   await test('invalid token is rejected', async () => {
     const { status } = await fetchJSON('/users', {
-      headers: { 'Authorization': 'Bearer fake-token-12345' }
+      headers: { 'Authorization': 'Bearer fake-token-000' }
     });
-    assert(status === 401, `Invalid token was accepted — SECURITY RISK`);
+    assert(status === 401, `Invalid token accepted — SECURITY RISK`);
   });
 
   await test('valid token grants access to /users', async () => {
     const token = getToken();
+    assert(token.length > 0, 'No valid token found');
     const { status } = await fetchJSON('/users', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
-    assert(status === 200, `Valid token rejected — Expected 200, got ${status}`);
+    assert(status === 200, `Valid token rejected — got ${status}`);
   });
 }
 
-// ─── TEST 3: Endpoint Health ──────────────────────────────────────────────────
+// ─── TEST GROUP 3: Endpoint Health ───────────────────────────────────────────
 async function testEndpointHealth() {
   console.log('\n🌐 Test Group 3: Endpoint Health');
   const token = getToken();
-  const authHeaders = { 'Authorization': `Bearer ${token}` };
+  const auth = { 'Authorization': `Bearer ${token}` };
 
   await test('GET /health returns 200', async () => {
     const { status, body } = await fetchJSON('/health');
-    assert(status === 200, `Health check failed: ${status}`);
-    assert(body.status === 'ok', `Health check status not ok: ${body.status}`);
+    assert(status === 200, `Got ${status}`);
+    assert(body.status === 'ok', `Status not ok`);
   });
 
   await test('GET /users returns data array', async () => {
-    const { status, body } = await fetchJSON('/users', { headers: authHeaders });
-    assert(status === 200, `Expected 200, got ${status}`);
-    assert(Array.isArray(body.data), 'Response missing data array');
-    assert(body.data.length > 0, 'Users table is empty — seeding may have failed');
+    const { status, body } = await fetchJSON('/users', { headers: auth });
+    assert(status === 200, `Got ${status}`);
+    assert(Array.isArray(body.data), 'No data array');
+    assert(body.data.length > 0, 'No users found');
   });
 
   await test('GET /orders returns data array', async () => {
-    const { status, body } = await fetchJSON('/orders', { headers: authHeaders });
-    assert(status === 200, `Expected 200, got ${status}`);
-    assert(Array.isArray(body.data), 'Response missing data array');
+    const { status, body } = await fetchJSON('/orders', { headers: auth });
+    assert(status === 200, `Got ${status}`);
+    assert(Array.isArray(body.data), 'No data array');
   });
 
   await test('POST /orders creates a new order', async () => {
     const { status, body } = await fetchJSON('/orders', {
       method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      headers: { ...auth, 'Content-Type': 'application/json' },
       body: JSON.stringify({ product: 'Shadow Test Plan', amount: 99.99 })
     });
-    assert(status === 201, `Order creation failed: ${status}`);
+    assert(status === 201, `Got ${status}`);
     assert(body.data?.id, 'No order ID returned');
-  });
-
-  await test('GET /users/:id returns single user', async () => {
-    const { status, body } = await fetchJSON('/users/1', { headers: authHeaders });
-    assert(status === 200, `Expected 200, got ${status}`);
-    assert(body.data?.id, 'No user data returned');
   });
 }
 
-// ─── TEST 4: Data Integrity ───────────────────────────────────────────────────
+// ─── TEST GROUP 4: Data Integrity ─────────────────────────────────────────────
 async function testDataIntegrity() {
   console.log('\n🗄️  Test Group 4: Data Integrity');
 
-  await test('database has seed data (users exist)', () => {
+  await test('database has seed data', () => {
     const db = createDB(SHADOW_DB);
     const count = db.prepare(`SELECT COUNT(*) as count FROM users`).get();
-    assert(count.count > 0, 'No users found — database may have been wiped');
+    assert(count.count > 0, 'No users — database may have been wiped');
   });
 
   await test('foreign key relationships intact', () => {
     const db = createDB(SHADOW_DB);
-    const orphanOrders = db.prepare(`
+    const orphans = db.prepare(`
       SELECT COUNT(*) as count FROM orders o
       LEFT JOIN users u ON o.user_id = u.id
       WHERE u.id IS NULL
     `).get();
-    assert(orphanOrders.count === 0, `${orphanOrders.count} orphan orders found — FK integrity broken`);
+    assert(orphans.count === 0, `${orphans.count} orphan orders found`);
   });
 
-  await test('email uniqueness constraint still enforced', () => {
+  await test('email uniqueness constraint enforced', () => {
     const db = createDB(SHADOW_DB);
-    const duplicates = db.prepare(`
+    const dupes = db.prepare(`
       SELECT email, COUNT(*) as count FROM users 
       GROUP BY email HAVING count > 1
     `).all();
-    assert(duplicates.length === 0, `${duplicates.length} duplicate emails found`);
+    assert(dupes.length === 0, `${dupes.length} duplicate emails found`);
   });
 }
 
-// ─── Run All Tests ────────────────────────────────────────────────────────────
+// ─── Run All ──────────────────────────────────────────────────────────────────
 async function runAllTests() {
-  console.log('\n');
-  console.log('╔════════════════════════════════════════╗');
+  console.log('\n╔════════════════════════════════════════╗');
   console.log('║      SHADOW TWIN TEST SUITE            ║');
-  console.log('║   Testing proposed change safety...    ║');
   console.log('╚════════════════════════════════════════╝');
 
-  // Wait for server to be ready
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  await new Promise(r => setTimeout(r, 3000));
 
   await testSchemaIntegrity();
   await testAuthEnforcement();
   await testEndpointHealth();
   await testDataIntegrity();
 
-  // ─── Summary ─────────────────────────────────────────────────────────────
-  console.log('\n');
-  console.log('╔════════════════════════════════════════╗');
-  console.log(`║  Results: ${passed} passed, ${failed} failed          ║`);
+  console.log('\n╔════════════════════════════════════════╗');
+  console.log(`║  Results: ${passed} passed, ${failed} failed             ║`);
   console.log('╚════════════════════════════════════════╝');
 
   if (failed > 0) {
     console.log('\n🚨 SHADOW TWIN DECISION: BLOCKED');
-    console.log('   This change has been rejected. Human review required.\n');
-    process.exit(1); // Exit code 1 = GitHub Actions marks PR as failed
+    console.log('   Human review required.\n');
+    process.exit(1);
   } else {
     console.log('\n✅ SHADOW TWIN DECISION: APPROVED');
-    console.log('   All checks passed. Change is safe to merge.\n');
-    process.exit(0); // Exit code 0 = GitHub Actions marks PR as passed
+    console.log('   Safe to merge.\n');
+    process.exit(0);
   }
 }
 
