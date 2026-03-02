@@ -19,13 +19,14 @@ jobs:
       - name: ⚙️ Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '18'
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install dependencies (clean)
         run: |
-            rm -rf node_modules
-            npm ci
+              rm -rf node_modules
+              npm ci
+              npm rebuild better-sqlite3 --build-from-source
 
       - name: 🌱 Seed Shadow Database
         run: node src/seed.js
@@ -44,7 +45,7 @@ jobs:
       - name: 🧪 Run Shadow Twin Tests
         run: node tests/shadow-tests.js
         env:
-          PORT: 3001
+          PORT: 3000
           DB_NAME: shadow.sqlite
 
       - name: 📊 Post results as PR comment
