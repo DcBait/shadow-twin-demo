@@ -1,14 +1,17 @@
-name: 🛡️ Shadow Twin Safety Check
+name: Shadow Twin Safety Check
 
 on:
   pull_request:
-    branches: [main, production]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
-  shadow-twin-validation:
-    name: Shadow Twin Tests
+  shadow_twin:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: 📥 Checkout proposed change
         uses: actions/checkout@v4
