@@ -1,0 +1,62 @@
+name: 🛡️ Shadow Twin Safety Check
+
+on:
+  pull_request:
+    branches: [main, production]
+
+jobs:
+  shadow-twin-validation:
+    name: Shadow Twin Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout proposed change
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 📦 Install dependencies
+        run: npm install
+
+      - name: 🌱 Seed Shadow Database
+        run: node src/seed.js
+        env:
+          DB_NAME: shadow.sqlite
+
+      - name: 🚀 Start Shadow Twin Server
+        run: |
+          PORT=3001 DB_NAME=shadow.sqlite node src/app.js &
+          echo "Shadow Twin started on port 3001"
+          sleep 3  # wait for server to be ready
+        env:
+          PORT: 3001
+          DB_NAME: shadow.sqlite
+
+      - name: 🧪 Run Shadow Twin Tests
+        run: node tests/shadow-tests.js
+        env:
+          PORT: 3001
+          DB_NAME: shadow.sqlite
+
+      - name: 📊 Post results as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const emoji = status === 'success' ? '✅' : '🚨';
+            const decision = status === 'success' ? 'APPROVED' : 'BLOCKED';
+            const message = status === 'success'
+              ? 'All Shadow Twin checks passed. This change is safe to merge.'
+              : 'Shadow Twin detected a problem. This change has been **blocked**. Human review required.';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ${emoji} Shadow Twin Decision: ${decision}\n\n${message}\n\n> *Codex never touches production first — it must survive the shadow world.*`
+            });
